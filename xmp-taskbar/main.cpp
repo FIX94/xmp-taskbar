@@ -13,6 +13,7 @@ static XMPFUNC_MISC *xmpfmisc;
 static XMPFUNC_STATUS *xmpfstatus;
 static ITaskbarList3* m_pTaskBarlist = NULL;
 static UINT_PTR timer_ptr = NULL;
+static CRITICAL_SECTION section;
 static HWND xmpwin;
 
 static void WINAPI DSP_About(HWND win);
@@ -37,7 +38,7 @@ static XMPDSP dsp = {
 static void WINAPI DSP_About(HWND win)
 {
 	char mBoxChar[256];
-	sprintf(mBoxChar, "Taskbar Progress v0.1 for XMPlay\n"
+	sprintf(mBoxChar, "Taskbar Progress v0.2 for XMPlay\n"
 		"Copyright (C) 2016 FIX94\n"
 		"Built: %s %s", __DATE__, __TIME__);
 	MessageBox(win,
@@ -53,16 +54,19 @@ static const char *WINAPI DSP_GetDescription(void *inst)
 
 VOID CALLBACK updateTaskbar(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime)
 {
-	//SendMessage seems to be reliable when it comes to subsongs
-	int cPosMs = SendMessage(xmpfmisc->GetWindow(), WM_USER, 0, IPC_GETOUTPUTTIME);
-	int lTotal = SendMessage(xmpfmisc->GetWindow(), WM_USER, 1, IPC_GETOUTPUTTIME) * 1000;
-	if (m_pTaskBarlist)
-	{	//actual isPlaying function does not return pause status so use SendMessage
-		if (SendMessage(xmpfmisc->GetWindow(), WM_USER, 0, IPC_ISPLAYING) == 3)
+	//try to get things updated
+	if (TryEnterCriticalSection(&section))
+	{
+		//SendMessage seems to be reliable when it comes to subsongs
+		int cPosMs = SendMessage(xmpwin, WM_USER, 0, IPC_GETOUTPUTTIME);
+		int lTotal = SendMessage(xmpwin, WM_USER, 1, IPC_GETOUTPUTTIME) * 1000;
+		//actual isPlaying function does not return pause status so use SendMessage
+		if (SendMessage(xmpwin, WM_USER, 0, IPC_ISPLAYING) == 3)
 			m_pTaskBarlist->SetProgressState(hwnd, TBPF_PAUSED);
 		else //everything except 3 for us means that its playing
 			m_pTaskBarlist->SetProgressState(hwnd, TBPF_INDETERMINATE);
-		m_pTaskBarlist->SetProgressValue(hwnd, cPosMs, lTotal);
+		m_pTaskBarlist->SetProgressValue(hwnd, min(cPosMs,lTotal), lTotal);
+		LeaveCriticalSection(&section);
 	}
 }
 
@@ -70,6 +74,8 @@ static void *WINAPI DSP_New()
 {
 	//Get Main Window for Updates
 	xmpwin=xmpfmisc->GetWindow();
+	//Create critical section for taskbar updates
+	InitializeCriticalSection(&section);
 	//Create TaskbarList Instance
 	CoCreateInstance(
 		CLSID_TaskbarList, NULL, CLSCTX_ALL,
@@ -77,28 +83,36 @@ static void *WINAPI DSP_New()
 	//If everything went well set start value
 	if (m_pTaskBarlist)
 	{
+		EnterCriticalSection(&section);
 		m_pTaskBarlist->SetProgressState(xmpwin, TBPF_INDETERMINATE);
 		m_pTaskBarlist->SetProgressValue(xmpwin, 0, 1);
+		LeaveCriticalSection(&section);
+		//Hook up a timer to the XMPlay window
+		timer_ptr = SetTimer(xmpwin, NULL, 20, updateTaskbar);
 	}
-	//hook up a timer to the XMPlay window
-	timer_ptr = SetTimer(xmpwin, 0, 50, updateTaskbar);
 
     return (void*)1;
 }
 
 static void WINAPI DSP_Free(void *inst)
 {
-	if (m_pTaskBarlist)
-	{
-		m_pTaskBarlist->SetProgressState(xmpwin, TBPF_NOPROGRESS);
-		m_pTaskBarlist->Release();
-	}
-	m_pTaskBarlist = NULL;
+	//Kill timer first
 	if (timer_ptr)
 	{
 		KillTimer(xmpwin, timer_ptr);
 		timer_ptr = NULL;
 	}
+	//then clean up taskbar
+	if (m_pTaskBarlist)
+	{
+		EnterCriticalSection(&section);
+		m_pTaskBarlist->SetProgressState(xmpwin, TBPF_NOPROGRESS);
+		m_pTaskBarlist->Release();
+		m_pTaskBarlist = NULL;
+		LeaveCriticalSection(&section);
+	}
+	//then get rid of the critical section
+	DeleteCriticalSection(&section);
 }
 
 // we dont have any config so these are just empty
