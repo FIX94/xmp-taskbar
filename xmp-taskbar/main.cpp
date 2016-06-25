@@ -38,7 +38,7 @@ static XMPDSP dsp = {
 static void WINAPI DSP_About(HWND win)
 {
 	char mBoxChar[256];
-	sprintf(mBoxChar, "Taskbar Progress v0.2 for XMPlay\n"
+	sprintf(mBoxChar, "Taskbar Progress v0.3 for XMPlay\n"
 		"Copyright (C) 2016 FIX94\n"
 		"Built: %s %s", __DATE__, __TIME__);
 	MessageBox(win,
@@ -61,11 +61,18 @@ VOID CALLBACK updateTaskbar(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime
 		int cPosMs = SendMessage(xmpwin, WM_USER, 0, IPC_GETOUTPUTTIME);
 		int lTotal = SendMessage(xmpwin, WM_USER, 1, IPC_GETOUTPUTTIME) * 1000;
 		//actual isPlaying function does not return pause status so use SendMessage
-		if (SendMessage(xmpwin, WM_USER, 0, IPC_ISPLAYING) == 3)
-			m_pTaskBarlist->SetProgressState(hwnd, TBPF_PAUSED);
-		else //everything except 3 for us means that its playing
-			m_pTaskBarlist->SetProgressState(hwnd, TBPF_INDETERMINATE);
-		m_pTaskBarlist->SetProgressValue(hwnd, min(cPosMs,lTotal), lTotal);
+		int playStatus = SendMessage(xmpwin, WM_USER, 0, IPC_ISPLAYING);
+		//we might actually be stopped but still called so clear progress if needed
+		if (playStatus == 0 || lTotal < 0 || cPosMs < 0)
+			m_pTaskBarlist->SetProgressState(hwnd, TBPF_NOPROGRESS);
+		else
+		{
+			if (playStatus == 3)
+				m_pTaskBarlist->SetProgressState(hwnd, TBPF_PAUSED);
+			else //everything except 3 for us means that its playing
+				m_pTaskBarlist->SetProgressState(hwnd, TBPF_INDETERMINATE);
+			m_pTaskBarlist->SetProgressValue(hwnd, min(cPosMs, lTotal), lTotal);
+		}
 		LeaveCriticalSection(&section);
 	}
 }
@@ -84,8 +91,7 @@ static void *WINAPI DSP_New()
 	if (m_pTaskBarlist)
 	{
 		EnterCriticalSection(&section);
-		m_pTaskBarlist->SetProgressState(xmpwin, TBPF_INDETERMINATE);
-		m_pTaskBarlist->SetProgressValue(xmpwin, 0, 1);
+		m_pTaskBarlist->SetProgressState(xmpwin, TBPF_NOPROGRESS);
 		LeaveCriticalSection(&section);
 		//Hook up a timer to the XMPlay window
 		timer_ptr = SetTimer(xmpwin, NULL, 20, updateTaskbar);
